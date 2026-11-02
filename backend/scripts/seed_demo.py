@@ -14,10 +14,11 @@ from datetime import date, datetime, timedelta
 
 from sqlalchemy import delete, select
 
-from app.agents import email_agent, meeting_agent
+from app.agents import email_agent, meeting_agent, planner
 from app.db import SessionLocal, init_db
 from app.models import (
     Contact,
+    DailyReport,
     Email,
     EmailAnalysis,
     EmailMeetingLink,
@@ -25,7 +26,7 @@ from app.models import (
     MeetingSummary,
     Task,
 )
-from app.services.llm_client import LLMJsonResult
+from app.services.llm_client import LLMJsonResult, LLMResult
 
 now = datetime.now().replace(second=0, microsecond=0)
 
@@ -265,8 +266,49 @@ def add_tasks(db) -> None:
                  priority="High", notes=DEMO_NOTE),
             Task(title="Call the Project Falcon supplier", due_date=today, notes=DEMO_NOTE),
             Task(title="Update the product catalogue", priority="Low", notes=DEMO_NOTE),
+            Task(title="Send the weekly report to Omar", status="Done", completed_at=now,
+                 notes=DEMO_NOTE),
         ]
     )  # fmt: skip
+    db.commit()
+
+
+# The morning plan and the day summary with --no-llm (the planner's normal format).
+FAKE_REPORTS = {
+    "morning": """## Do first
+1. Prepare the Q4 sales report (late since yesterday)
+2. Call the Project Falcon supplier (due today)
+3. Reply to Sara Khan: confirm the contract renewal and the new volume
+## Emails waiting for your reply
+- Ahmad Al-Otaibi: طلب عرض سعر - 200 وحدة (before Thursday)
+- Khaled Mansour: confirm Tuesday at 11 for the meeting
+- CloudHost Billing: invoice #4471 is overdue
+## From your meetings
+- Send the price list to Al-Noor
+- Risk: the Project Falcon supplier may be two weeks late
+## Later
+- Update the product catalogue""",
+    "evening": """## Done today
+- Send the weekly report to Omar
+## Still open
+1. Prepare the Q4 sales report (late)
+2. Call the Project Falcon supplier
+3. Send the price list to Al-Noor
+## Meetings today
+- Weekly Sales Meeting: the Al-Noor contract waits for legal approval
+- Launch moves to 15 October if the supplier is late
+## Start tomorrow with
+- The Q4 sales report and the Al-Noor price list""",
+}
+
+
+def add_reports(db) -> None:
+    """Today's morning plan and day summary from FAKE_REPORTS (no API key needed)."""
+    for kind, text in FAKE_REPORTS.items():
+        planner.ask = lambda *a, text=text, **k: LLMResult(
+            text=text, model="demo (no LLM)", input_tokens=0, output_tokens=0
+        )
+        planner.generate(db, kind).report.made_by = "demo"
     db.commit()
 
 
@@ -288,6 +330,7 @@ def clear(db) -> None:
     db.execute(delete(MeetingSummary).where(MeetingSummary.meeting_id.in_(meeting_ids)))
     db.execute(delete(Meeting).where(Meeting.id.in_(meeting_ids)))
     db.execute(delete(Contact).where(Contact.address.in_(DEMO_CONTACTS)))
+    db.execute(delete(DailyReport).where(DailyReport.made_by == "demo"))
     db.commit()
     print(f"Removed {len(ids)} demo emails and {len(meeting_ids)} demo meetings.")
 
@@ -360,6 +403,9 @@ def main() -> None:
         )
         for error in result.errors:
             print("Error:", error)
+        if "--no-llm" in sys.argv:
+            add_reports(db)
+            print("Added today's demo morning plan and day summary.")
 
 
 if __name__ == "__main__":
